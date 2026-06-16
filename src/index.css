@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+.react-flow__bg {
+  background-color: #050505 !important;
+}
+
+.react-flow__controls button {
+  background-color: #0a0a0a !important;
+  border-color: rgba(255,255,255,0.1) !important;
+  color: rgba(255,255,255,0.6) !important;
+}
+
+.react-flow__controls button:hover {
+  background-color: rgba(255,255,255,0.1) !important;
+}
+
+.custom-graph-container .react-flow__node {
+  border-radius: 4px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 14px;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+}
+
+.custom-graph-container .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  background-color: #3b82f6;
+  border: 2px solid #050505;
+}
