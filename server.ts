@@ -8,7 +8,13 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let _ai: any = null;
+function getAi() {
+  if (!_ai) {
+    _ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  return _ai;
+}
 const PORT = 3000;
 
 async function startServer() {
@@ -74,7 +80,7 @@ async function startServer() {
   
   wssLive.on("connection", async (clientWs) => {
     try {
-      const session = await ai.live.connect({
+      const session = await getAi().live.connect({
         model: "gemini-3.1-flash-live-preview",
         callbacks: {
           onmessage: (message: LiveServerMessage) => {
@@ -114,18 +120,25 @@ async function startServer() {
       });
       
     } catch (err: any) {
-      const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
-      if (!isRateLimit) {
-        console.error("Failed to connect to Live API:", err);
+      const msg = err?.message || '';
+      const isBilling = msg.includes('dunning decision is deny') || err?.status === 403 || msg.includes('PERMISSION_DENIED');
+      const isRateLimit = err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+      
+      if (isBilling) {
+         console.warn("Live API: Billing error.");
+         if (clientWs.readyState === WebSocket.OPEN) {
+           clientWs.send(JSON.stringify({ error: "Voice AI is currently unavailable due to a Google Cloud billing issue. Please check your GCP project billing status." }));
+         }
+      } else if (isRateLimit) {
+         console.warn("Live API: Rate limit exceeded (429).");
+         if (clientWs.readyState === WebSocket.OPEN) {
+           clientWs.send(JSON.stringify({ error: "Voice AI is currently unavailable due to API quota limits. Please try again later." }));
+         }
       } else {
-        console.warn("Live API: Rate limit exceeded (429).");
-      }
-      if (clientWs.readyState === WebSocket.OPEN) {
-        if (isRateLimit) {
-          clientWs.send(JSON.stringify({ error: "Voice AI is currently unavailable due to API quota limits. Please try again later." }));
-        } else {
-          clientWs.send(JSON.stringify({ error: "Failed to connect to Voice AI." }));
-        }
+         console.error("Failed to connect to Live API:", err);
+         if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ error: "Failed to connect to Voice AI." }));
+         }
       }
       clientWs.close();
     }
@@ -133,13 +146,28 @@ async function startServer() {
 
   // ========== API Routes ==========
 
+  function handleGeminiError(err: any, res: any, fallbackMessage: string) {
+    const msg = err?.message || '';
+    if (msg.includes('dunning decision is deny') || err?.status === 403 || msg.includes('PERMISSION_DENIED')) {
+      console.warn("Gemini API Billing Error:", msg);
+      return res.status(403).json({ error: "Google Cloud Billing issue detected. Please check your GCP project billing status (e.g. payment method may be expired or suspended)." });
+    }
+    const isRateLimit = err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+    if (isRateLimit) {
+      console.warn("Gemini API Rate Limit Exceeded (429)");
+      return res.status(429).json({ error: "API quota exceeded. Please check your Gemini API plan or try again later." });
+    }
+    console.error("Gemini API Error:", err);
+    return res.status(500).json({ error: fallbackMessage });
+  }
+
   app.post('/api/gemini/analyze', async (req, res) => {
     try {
       const { prompt, currentState } = req.body;
       
       // We use interactions API with the deep research model as requested for some complex tasks
       // Wait, general tasks use 3.5-flash. Analysis might just need "gemini-3.1-pro-preview" with high thinking.
-      const response = await ai.models.generateContent({
+      const response = await getAi().models.generateContent({
         model: "gemini-3.5-flash",
         contents: prompt + "\n\nCurrent Graph State: " + JSON.stringify(currentState),
         config: {
@@ -151,17 +179,14 @@ async function startServer() {
 
       res.json({ result: response.text });
     } catch (err: any) {
-      const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
-      if (!isRateLimit) console.error(err);
-      else console.warn("Gemini API Rate Limit Exceeded (429) for /api/gemini/analyze");
-      res.status(isRateLimit ? 429 : 500).json({ error: isRateLimit ? "API quota exceeded. Please check your Gemini API plan or try again later." : "Failed to generate analysis" });
+      handleGeminiError(err, res, "Failed to generate analysis");
     }
   });
 
   app.post('/api/gemini/complex-analysis', async (req, res) => {
     try {
       const { prompt, currentState } = req.body;
-      const response = await ai.models.generateContent({
+      const response = await getAi().models.generateContent({
         model: "gemini-3.1-pro-preview",
         contents: prompt + "\n\nCurrent Graph State: " + JSON.stringify(currentState),
         config: {
@@ -171,17 +196,14 @@ async function startServer() {
       });
       res.json({ result: response.text });
     } catch (err: any) {
-      const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
-      if (!isRateLimit) console.error(err);
-      else console.warn("Gemini API Rate Limit Exceeded (429) for /api/gemini/complex-analysis");
-      res.status(isRateLimit ? 429 : 500).json({ error: isRateLimit ? "API quota exceeded. Please check your Gemini API plan or try again later." : "Failed to perform deep analysis" });
+      handleGeminiError(err, res, "Failed to perform deep analysis");
     }
   });
 
   app.post('/api/gemini/generate-image', async (req, res) => {
     try {
       const { prompt, size } = req.body; // size: '1K', '2K', or '4K'
-      const response = await ai.models.generateContent({
+      const response = await getAi().models.generateContent({
         model: 'gemini-3-pro-image',
         contents: {
           parts: [{ text: prompt }]
@@ -201,17 +223,14 @@ async function startServer() {
       }
       res.status(500).json({ error: "No image found in response" });
     } catch (err: any) {
-      const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
-      if (!isRateLimit) console.error(err);
-      else console.warn("Gemini API Rate Limit Exceeded (429) for /api/gemini/generate-image");
-      res.status(isRateLimit ? 429 : 500).json({ error: isRateLimit ? "API quota exceeded. Please check your Gemini API plan or try again later." : "Failed to generate image" });
+      handleGeminiError(err, res, "Failed to generate image");
     }
   });
 
   app.post('/api/gemini/analyze-video', express.json({limit: '50mb'}), async (req, res) => {
     try {
       const { videoBase64, mimeType } = req.body;
-      const response = await ai.models.generateContent({
+      const response = await getAi().models.generateContent({
         model: "gemini-3.1-pro-preview",
         contents: {
           parts: [
@@ -225,10 +244,7 @@ async function startServer() {
       });
       res.json({ result: response.text });
     } catch (err: any) {
-      const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
-      if (!isRateLimit) console.error(err);
-      else console.warn("Gemini API Rate Limit Exceeded (429) for /api/gemini/analyze-video");
-      res.status(isRateLimit ? 429 : 500).json({ error: isRateLimit ? "API quota exceeded. Please check your Gemini API plan or try again later." : "Failed to analyze video" });
+      handleGeminiError(err, res, "Failed to analyze video");
     }
   });
 

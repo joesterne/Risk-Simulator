@@ -120,8 +120,15 @@ export default function App() {
           currentState: appState
         })
       });
-      const data = await res.json();
       
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error(res.status === 429 ? "API quota exceeded. Please check your Gemini API plan or try again later." : "Server returned invalid format: " + text.substring(0, 50));
+      }
+
       if (!res.ok) throw new Error(data.error || 'Simulation failed.');
       
       if (data.result) {
@@ -190,7 +197,7 @@ export default function App() {
         }
       }
     } catch (e: any) {
-      console.error(e);
+      console.warn("Simulation Error:", e.message);
       const errorAlert: EventAlert = {
         id: Math.random().toString(36).substr(2, 9),
         title: "Simulation Error",
@@ -316,7 +323,9 @@ export default function App() {
                    headers: { 'Content-Type': 'application/json' },
                    body: JSON.stringify({ prompt: p, size: '2K' })
                  });
-                 const d = await r.json();
+                 const text = await r.text();
+                 let d;
+                 try { d = JSON.parse(text); } catch(e) { throw new Error(r.status === 429 ? "API quota exceeded. Please check your Gemini API plan or try again later." : text.substring(0, 50)); }
                  if (!r.ok) throw new Error(d.error || "Failed generating image.");
                  if (d.imageUrl) {
                    const win = window.open();
@@ -357,7 +366,9 @@ export default function App() {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ videoBase64: base64, mimeType: file.type })
                       });
-                      const d = await r.json();
+                      const text = await r.text();
+                      let d;
+                      try { d = JSON.parse(text); } catch(e) { throw new Error(r.status === 429 ? "API quota exceeded. Please check your Gemini API plan or try again later." : text.substring(0, 50)); }
                       if (!r.ok) throw new Error(d.error || "Failed to analyze video.");
                       if (d.result) {
                         alert("Analysis Result:\n\n" + d.result);
