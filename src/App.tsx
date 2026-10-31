@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { GraphCanvas } from './components/GraphCanvas';
 import { useLiveVoice } from './hooks/useLiveVoice';
 import { initAuth, googleSignIn, logout } from './lib/auth';
 import { User } from 'firebase/auth';
 import { AppState, EventAlert } from './types';
 import { saveToDrive, sendChatAlert } from './lib/workspace';
-import { ShieldAlert, Activity, Play, Square, Save, Mic, Send, LogOut, Clock, Link as LinkIcon, HardDrive, MessageSquare, Image, Video } from 'lucide-react';
+import { Activity, Play, Mic, Send, LogOut, Clock, HardDrive, MessageSquare, Image, Video } from 'lucide-react';
 import { cn } from './lib/utils';
 import ReactMarkdown from 'react-markdown';
 
@@ -34,6 +34,10 @@ function EventSuggestion({ suggestion, onClick }: { suggestion: string, onClick:
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>(DEFAULT_STATE);
+  // Async handlers read state through this ref so a response that resolves late
+  // merges into the latest state instead of overwriting changes made during the await.
+  const appStateRef = useRef(appState);
+  useEffect(() => { appStateRef.current = appState; }, [appState]);
   const [user, setUser] = useState<User | null>(null);
   const [needsAuth, setNeedsAuth] = useState(true);
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -68,18 +72,21 @@ export default function App() {
 
   // Connect to Collab WS
   useEffect(() => {
-    let socket: WebSocket;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let disposed = false;
     const connect = () => {
+      if (disposed) return;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(`${proto}//${window.location.host}/collaboration`);
-      
+
       socket.onopen = () => setWs(socket);
-      
+
       socket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'init' || msg.type === 'sync') {
-            if (msg.state.nodes && msg.state.nodes.length > 0) {
+            if (msg.state && msg.state.nodes && msg.state.nodes.length > 0) {
               setAppState(msg.state);
             }
           }
@@ -89,12 +96,18 @@ export default function App() {
       };
 
       socket.onclose = () => {
-        setTimeout(connect, 2000); // Reconnect logic
+        // Without the disposed check, cleanup closing the socket would schedule a
+        // reconnect that reopens a socket (and setState) on the unmounted component.
+        if (!disposed) {
+          reconnectTimer = window.setTimeout(connect, 2000); // Reconnect logic
+        }
       };
     };
 
     connect();
     return () => {
+      disposed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (socket) socket.close();
     };
   }, []);
@@ -139,7 +152,7 @@ export default function App() {
             const parsed = JSON.parse(jsonMatch[1]);
             
             // Assume parsed has newNodes, newEdges, alerts, timeline
-            const newState = { ...appState };
+            const newState = { ...appStateRef.current };
             
             if (parsed.newNodes && Array.isArray(parsed.newNodes)) {
               newState.nodes = [...newState.nodes, ...parsed.newNodes];
@@ -187,10 +200,11 @@ export default function App() {
                date: new Date().toISOString()
              };
 
-             const newState = { 
-               ...appState, 
-               alerts: [genericAlert, ...appState.alerts],
-               history: [genericHistory, ...(appState.history || [])]
+             const current = appStateRef.current;
+             const newState = {
+               ...current,
+               alerts: [genericAlert, ...current.alerts],
+               history: [genericHistory, ...(current.history || [])]
              };
              setAppState(newState);
              broadcastState(newState);
@@ -205,7 +219,8 @@ export default function App() {
         severity: "high",
         timestamp: new Date().toISOString()
       };
-      const newState = { ...appState, alerts: [errorAlert, ...appState.alerts] };
+      const current = appStateRef.current;
+      const newState = { ...current, alerts: [errorAlert, ...current.alerts] };
       setAppState(newState);
       broadcastState(newState);
     } finally {
@@ -233,6 +248,12 @@ export default function App() {
        else alert('Failed to send to Chat. Verify space ID and scopes.');
     }
   };
+
+  // Computed once; the history pane previously ran this same filter twice per render.
+  const filteredHistory = (appState.history || []).filter(item =>
+    item.prompt.toLowerCase().includes(historySearch.toLowerCase()) ||
+    item.summary.toLowerCase().includes(historySearch.toLowerCase())
+  );
 
   return (
     <div className="flex flex-col h-screen bg-[#050505] text-[#e0e0e0] font-sans">
@@ -546,16 +567,10 @@ export default function App() {
                 {(!appState.history || appState.history.length === 0) ? (
                   <div className="text-xs text-white/50 border border-white/10 rounded p-4 text-center bg-white/5">No previous simulations.</div>
                 ) : (
-                  appState.history.filter(item => 
-                    item.prompt.toLowerCase().includes(historySearch.toLowerCase()) || 
-                    item.summary.toLowerCase().includes(historySearch.toLowerCase())
-                  ).length === 0 ? (
+                  filteredHistory.length === 0 ? (
                     <div className="text-xs text-white/50 border border-white/10 rounded p-4 text-center bg-white/5">No matching simulations found.</div>
                   ) : (
-                    appState.history.filter(item => 
-                      item.prompt.toLowerCase().includes(historySearch.toLowerCase()) || 
-                      item.summary.toLowerCase().includes(historySearch.toLowerCase())
-                    ).map((item) => (
+                    filteredHistory.map((item) => (
                       <div key={item.id} className="rounded border border-white/10 p-3 bg-white/5">
                         <div className="text-xs text-blue-400 mb-2 italic">"{item.prompt}"</div>
                         <div className="text-xs text-white/60 leading-relaxed mb-2"><ReactMarkdown>{item.summary}</ReactMarkdown></div>

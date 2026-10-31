@@ -39,7 +39,9 @@ export async function sendChatAlert(spaceId: string, alertText: string): Promise
   if (!token) return false;
 
   try {
-    const res = await fetch(`https://chat.googleapis.com/v1/spaces/${spaceId}/messages`, {
+    // The prompt asks for the full resource name ("spaces/AAAABBBBCCC"); don't double the prefix.
+    const resourceName = spaceId.trim().startsWith('spaces/') ? spaceId.trim() : `spaces/${spaceId.trim()}`;
+    const res = await fetch(`https://chat.googleapis.com/v1/${resourceName}/messages`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,

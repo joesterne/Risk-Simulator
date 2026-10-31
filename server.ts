@@ -21,7 +21,9 @@ async function startServer() {
   const app = express();
   const server = http.createServer(app);
   
-  app.use(express.json());
+  // 50mb so the /api/gemini/analyze-video payloads (base64 video) survive the global parser;
+  // the ~100kb default rejected them with a 413 before the route's own parser ever ran.
+  app.use(express.json({ limit: '50mb' }));
 
   // WebSocket Servers for different routes
   const wssCollab = new WebSocketServer({ noServer: true });
@@ -62,7 +64,16 @@ async function startServer() {
         if (data.type === 'sync') {
           // A rudimentary sync mechanism. In a real app we'd use CRDTs or operational transforms.
           // For now, client sends the entire state.
-          appState = data.state;
+          // Validate the shape first: one malformed sync would otherwise corrupt the shared state for every client.
+          if (!data.state || !Array.isArray(data.state.nodes) || !Array.isArray(data.state.edges)) {
+            return;
+          }
+          appState = {
+            nodes: data.state.nodes,
+            edges: data.state.edges,
+            alerts: Array.isArray(data.state.alerts) ? data.state.alerts : [],
+            timeline: Array.isArray(data.state.timeline) ? data.state.timeline : []
+          };
           // Broadcast to everyone else
           wssCollab.clients.forEach((client) => {
             if (client !== ws && client.readyState === WebSocket.OPEN) {
@@ -116,20 +127,19 @@ async function startServer() {
       });
       
       clientWs.on("close", () => {
-         // session.close() is not available on all genai types, handle gracefully
+         // Close the upstream Live session too, or it leaks (and keeps counting against quota) per abandoned client.
+         try { (session as any).close?.(); } catch { /* close() is not available on all genai types */ }
       });
       
     } catch (err: any) {
-      const msg = err?.message || '';
-      const isBilling = msg.includes('dunning decision is deny') || err?.status === 403 || msg.includes('PERMISSION_DENIED');
-      const isRateLimit = err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
-      
-      if (isBilling) {
+      const kind = classifyGeminiError(err);
+
+      if (kind === 'billing') {
          console.warn("Live API: Billing error.");
          if (clientWs.readyState === WebSocket.OPEN) {
            clientWs.send(JSON.stringify({ error: "Voice AI is currently unavailable due to a Google Cloud billing issue. Please check your GCP project billing status." }));
          }
-      } else if (isRateLimit) {
+      } else if (kind === 'rate') {
          console.warn("Live API: Rate limit exceeded (429).");
          if (clientWs.readyState === WebSocket.OPEN) {
            clientWs.send(JSON.stringify({ error: "Voice AI is currently unavailable due to API quota limits. Please try again later." }));
@@ -146,14 +156,21 @@ async function startServer() {
 
   // ========== API Routes ==========
 
-  function handleGeminiError(err: any, res: any, fallbackMessage: string) {
+  // One shared classification for Gemini failures (was duplicated in the Live catch and handleGeminiError).
+  function classifyGeminiError(err: any): 'billing' | 'rate' | 'other' {
     const msg = err?.message || '';
-    if (msg.includes('dunning decision is deny') || err?.status === 403 || msg.includes('PERMISSION_DENIED')) {
-      console.warn("Gemini API Billing Error:", msg);
+    if (msg.includes('dunning decision is deny') || err?.status === 403 || msg.includes('PERMISSION_DENIED')) return 'billing';
+    if (err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) return 'rate';
+    return 'other';
+  }
+
+  function handleGeminiError(err: any, res: any, fallbackMessage: string) {
+    const kind = classifyGeminiError(err);
+    if (kind === 'billing') {
+      console.warn("Gemini API Billing Error:", err?.message || '');
       return res.status(403).json({ error: "Google Cloud Billing issue detected. Please check your GCP project billing status (e.g. payment method may be expired or suspended)." });
     }
-    const isRateLimit = err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
-    if (isRateLimit) {
+    if (kind === 'rate') {
       console.warn("Gemini API Rate Limit Exceeded (429)");
       return res.status(429).json({ error: "API quota exceeded. Please check your Gemini API plan or try again later." });
     }

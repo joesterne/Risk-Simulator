@@ -18,6 +18,12 @@ provider.addScope('https://www.googleapis.com/auth/chat.spaces');
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
+let cachedTokenExpiresAt = 0; // epoch ms
+// Google access tokens live ~60 minutes; treat the cache as stale a little early so
+// Drive/Chat calls don't start failing with a generic error an hour after sign-in.
+const TOKEN_LIFETIME_MS = 55 * 60 * 1000;
+
+const tokenStillValid = () => cachedAccessToken !== null && Date.now() < cachedTokenExpiresAt;
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -25,14 +31,16 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      if (tokenStillValid()) {
+        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken!);
       } else if (!isSigningIn) {
         cachedAccessToken = null;
+        cachedTokenExpiresAt = 0;
         if (onAuthFailure) onAuthFailure();
       }
     } else {
       cachedAccessToken = null;
+      cachedTokenExpiresAt = 0;
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -48,6 +56,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
+    cachedTokenExpiresAt = Date.now() + TOKEN_LIFETIME_MS;
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     console.error('Sign in error:', error);
@@ -58,10 +67,16 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
+  if (!tokenStillValid()) {
+    cachedAccessToken = null;
+    cachedTokenExpiresAt = 0;
+    return null;
+  }
   return cachedAccessToken;
 };
 
 export const logout = async () => {
   await auth.signOut();
   cachedAccessToken = null;
+  cachedTokenExpiresAt = 0;
 };

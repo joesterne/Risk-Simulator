@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import ReactFlow, {
   Controls,
   Background,
@@ -68,7 +68,13 @@ export function GraphCanvas({ appState, setAppState, broadcastState, searchTerm 
     (changes: NodeChange[]) => {
       const newNodes = applyNodeChanges(changes, nodes);
       setNodes(newNodes);
-      
+
+      // Position changes stream continuously during a drag; syncing each one floods
+      // collaborators with full-state broadcasts. Local state tracks the drag, and the
+      // final change (dragging === false) syncs the settled position.
+      const isDragStream = changes.every(c => c.type === 'position' && c.dragging);
+      if (isDragStream) return;
+
       // Update app state and broadcast
       const newState = { ...appState, nodes: newNodes as GraphNode[] };
       setAppState(newState);

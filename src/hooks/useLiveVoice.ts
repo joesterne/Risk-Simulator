@@ -56,6 +56,9 @@ export function useLiveVoice() {
   }, []);
 
   const stopVoice = useCallback(() => {
+    // A new session gets a fresh AudioContext whose clock restarts at 0; carrying the old
+    // session's playback offset over would schedule new audio far in the future (silence).
+    nextStartTimeRef.current = 0;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -85,7 +88,8 @@ export function useLiveVoice() {
     }
 
     try {
-      const wsUrl = `ws://${window.location.host}/live`;
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${window.location.host}/live`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
